@@ -1917,112 +1917,59 @@ function submitReadPart(n, resId) {
 }
 
 
+
 // ════════════════════════════════════════════════════════
-//  WEB SPEECH API ENGINE — free, no key, works everywhere
+//  GROQ ORPHEUS TTS ENGINE — free, real voices, any browser
 // ════════════════════════════════════════════════════════
 const EL = {
+  GROQ_KEY: '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',
+  // Orpheus v1 English voices — variety of accents like real Cambridge exam
+  VOICES: [
+    { id: 'luna',   label: 'Luna',   accent: 'British female'   },
+    { id: 'atlas',  label: 'Atlas',  accent: 'American male'    },
+    { id: 'aurora', label: 'Aurora', accent: 'British female'   },
+    { id: 'leo',    label: 'Leo',    accent: 'American male'    },
+    { id: 'stella', label: 'Stella', accent: 'Australian female'},
+    { id: 'orion',  label: 'Orion',  accent: 'British male'     },
+  ],
   playsLeft: {},
   MAX_PLAYS: 2,
   activeId: null,
-  activeUtts: [],
-  keepAliveTimer: null,
-  voiceCache: null,
+  activeAudio: null,
+  audioCache: {},
 
-  hasKey() { return true; }, // always available
+  voiceId(idx)    { return this.VOICES[idx % this.VOICES.length].id; },
+  voiceLabel(idx) { const v = this.VOICES[idx % this.VOICES.length]; return `${v.label} · ${v.accent}`; },
 
-  // Load and cache voices
-  getVoices() {
-    if (this.voiceCache && this.voiceCache.length) return this.voiceCache;
-    const all = window.speechSynthesis.getVoices();
-    const en = all.filter(v => /^en/i.test(v.lang));
-    this.voiceCache = en.length ? en : all;
-    return this.voiceCache;
-  },
-
-  // 5 distinct voice slots — picks best available for each
-  VOICE_PREFS: [
-    // Slot 0: female British
-    ['Microsoft Libby','Microsoft Hazel','Google UK English Female','Karen','Samantha','Moira'],
-    // Slot 1: male British
-    ['Microsoft Ryan','Microsoft George','Google UK English Male','Daniel','Fred'],
-    // Slot 2: female American
-    ['Microsoft Aria','Microsoft Jenny','Google US English','Samantha','Victoria'],
-    // Slot 3: male American/deep
-    ['Microsoft Guy','Microsoft Davis','Alex','Tom'],
-    // Slot 4: female alternative
-    ['Microsoft Sonia','Microsoft Zira','Tessa','Fiona','Veena'],
-  ],
-
-  pickVoice(slot) {
-    const voices = this.getVoices();
-    if (!voices.length) return null;
-    const prefs = this.VOICE_PREFS[slot % this.VOICE_PREFS.length] || [];
-    for (const pref of prefs) {
-      const v = voices.find(v => v.name.includes(pref));
-      if (v) return v;
+  async synthesize(text, voiceIdx) {
+    const voice = this.voiceId(voiceIdx || 0);
+    const res = await fetch('https://api.groq.com/openai/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.GROQ_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'playai-tts',
+        input: text,
+        voice: `${voice.charAt(0).toUpperCase() + voice.slice(1)}-PlayAI`,
+        response_format: 'mp3'
+      })
+    });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.error?.message || `HTTP ${res.status}`);
     }
-    // Fallback: cycle through available voices
-    return voices[slot % voices.length];
-  },
-
-  voiceFor(idx) {
-    const v = this.pickVoice(idx);
-    return { name: v ? v.name.replace('Microsoft ','').replace(' Online (Natural)','') : 'Voice '+(idx+1) };
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
   },
 
   stop() {
-    window.speechSynthesis.cancel();
-    clearInterval(this.keepAliveTimer);
+    if (this.activeAudio) { this.activeAudio.pause(); this.activeAudio = null; }
     this.activeId = null;
-    this.activeUtts = [];
-  },
-
-  speak(text, voiceSlot, onProgress, onDone) {
-    window.speechSynthesis.cancel();
-    clearInterval(this.keepAliveTimer);
-
-    // Split into sentences to track progress
-    const sentences = text.match(/[^.!?\n]+[.!?\n]*/g) || [text];
-    const total = sentences.length;
-    let idx = 0;
-
-    const speakNext = () => {
-      if (idx >= total) { clearInterval(this.keepAliveTimer); this.activeId = null; onDone && onDone(true); return; }
-      const utt = new SpeechSynthesisUtterance(sentences[idx].trim());
-      utt.rate = 0.87;
-      utt.pitch = 1.0;
-      utt.lang = 'en-GB';
-      const v = this.pickVoice(voiceSlot || 0);
-      if (v) utt.voice = v;
-      utt.onend = () => { idx++; onProgress && onProgress(idx / total); speakNext(); };
-      utt.onerror = (e) => { if (e.error === 'interrupted') return; idx++; speakNext(); };
-      window.speechSynthesis.speak(utt);
-    };
-
-    // Chrome keep-alive: pause/resume every 10s to prevent cutting off
-    this.keepAliveTimer = setInterval(() => {
-      if (window.speechSynthesis.speaking) {
-        window.speechSynthesis.pause();
-        window.speechSynthesis.resume();
-      } else {
-        clearInterval(this.keepAliveTimer);
-      }
-    }, 10000);
-
-    speakNext();
   }
 };
 
-// Pre-load voices as soon as possible
-if ('speechSynthesis' in window) {
-  window.speechSynthesis.getVoices();
-  window.speechSynthesis.onvoiceschanged = () => {
-    EL.voiceCache = null; // clear cache so next call re-fetches
-    EL.getVoices();
-  };
-}
-
-// Stub modal functions (not needed anymore)
 function openElModal() {}
 function closeElModal() {}
 function saveElKey() {}
@@ -2032,15 +1979,14 @@ function updateAudioBtn() {
 }
 window.addEventListener('DOMContentLoaded', updateAudioBtn);
 
-// ── Audio player widget ──
 function audioPlayer(id, text, label, voiceIdx) {
   if (!(id in EL.playsLeft)) EL.playsLeft[id] = EL.MAX_PLAYS;
-  const voice = EL.voiceFor(voiceIdx || 0);
+  const vLabel = EL.voiceLabel(voiceIdx || 0);
   return `
     <div class="audio-player" id="AP_${id}">
       <button class="audio-play-btn" id="APB_${id}" onclick="ttsPlay('${id}',${voiceIdx||0})">▶</button>
       <div class="audio-info">
-        <div class="audio-title">${esc(label)} <span class="voice-badge">${voice.name}</span></div>
+        <div class="audio-title">${esc(label)} <span class="voice-badge">${vLabel}</span></div>
         <div class="audio-status" id="APS_${id}">Ready</div>
       </div>
       <div class="audio-progress-wrap">
@@ -2048,35 +1994,26 @@ function audioPlayer(id, text, label, voiceIdx) {
         <div class="audio-time" id="APT_${id}">▶ ${EL.MAX_PLAYS} plays allowed</div>
       </div>
       <div class="audio-controls-right">
-        <button class="audio-speed-btn active" id="SPD_${id}_normal" onclick="ttsSpeedSet('${id}',0.87,this)">Normal</button>
-        <button class="audio-speed-btn" id="SPD_${id}_slow" onclick="ttsSpeedSet('${id}',0.65,this)">Slow</button>
         <button class="audio-transcript-btn" onclick="toggleTr('TR_${id}')">📄 Transcript</button>
       </div>
     </div>
     <div class="transcript-box" id="TR_${id}">${esc(text).replace(/\n/g,'<br>')}</div>`;
 }
 
-const ttsRates = {};
-function ttsSpeedSet(id, rate, btn) {
-  ttsRates[id] = rate;
-  const ap = document.getElementById('AP_' + id);
-  if (ap) ap.querySelectorAll('.audio-speed-btn').forEach(b => b.classList.remove('active'));
-  if (btn) btn.classList.add('active');
-}
-
-function ttsPlay(id, voiceIdx) {
+async function ttsPlay(id, voiceIdx) {
   const btn  = document.getElementById('APB_' + id);
   const stat = document.getElementById('APS_' + id);
   const prog = document.getElementById('APP_' + id);
   const time = document.getElementById('APT_' + id);
 
-  // Toggle stop
+  // Stop if playing this one
   if (EL.activeId === id) {
     EL.stop();
     if (btn)  { btn.textContent = '▶'; btn.style.background = ''; }
-    if (stat) stat.textContent = 'Stopped'; return;
+    if (stat) stat.textContent = 'Stopped';
+    return;
   }
-  // Stop other active
+  // Stop any other
   if (EL.activeId) {
     const ob = document.getElementById('APB_' + EL.activeId);
     const os = document.getElementById('APS_' + EL.activeId);
@@ -2087,7 +2024,8 @@ function ttsPlay(id, voiceIdx) {
 
   if (!(id in EL.playsLeft)) EL.playsLeft[id] = EL.MAX_PLAYS;
   if (EL.playsLeft[id] <= 0) {
-    if (stat) stat.textContent = '⚠ Max 2 plays reached (Cambridge rule)'; return;
+    if (stat) stat.textContent = '⚠ Max 2 plays reached (Cambridge rule)';
+    return;
   }
 
   const tr = document.getElementById('TR_' + id);
@@ -2095,32 +2033,63 @@ function ttsPlay(id, voiceIdx) {
   const text = (tr.innerText || tr.textContent || '').trim();
   if (!text) return;
 
-  // Override rate if set
-  const rate = ttsRates[id] || 0.87;
-
   EL.playsLeft[id]--;
   const newLeft = EL.playsLeft[id];
   EL.activeId = id;
 
-  if (btn)  { btn.textContent = '⏹'; btn.style.background = '#e53935'; }
-  if (stat) stat.textContent = '🔊 Playing…';
-  if (prog) prog.style.width = '0%';
+  if (btn)  { btn.textContent = '⏹'; btn.style.background = '#e53935'; btn.disabled = true; }
+  if (stat) stat.textContent = '⏳ Generating audio…';
+  if (prog) prog.style.width = '5%';
   if (time) {
     time.textContent = `▶ ${newLeft} play${newLeft===1?'':'s'} remaining`;
-    time.className = 'audio-time' + (newLeft === 0 ? ' zero' : newLeft === 1 ? ' warn' : '');
+    time.className = 'audio-time' + (newLeft===0?' zero':newLeft===1?' warn':'');
   }
 
-  // Patch rate onto EL before speaking
-  const origSpeak = EL.speak.bind(EL);
-  EL.speak(text, voiceIdx || 0,
-    (p) => { if (prog) prog.style.width = Math.round(p * 100) + '%'; },
-    (ok) => {
+  try {
+    // Use cached audio if available (for 2nd play)
+    let url = EL.audioCache[id];
+    if (!url) {
+      url = await EL.synthesize(text, voiceIdx || 0);
+      EL.audioCache[id] = url; // cache for 2nd play
+    }
+
+    if (prog) prog.style.width = '15%';
+    if (stat) stat.textContent = '🔊 Playing…';
+    if (btn)  btn.disabled = false;
+
+    const audio = new Audio(url);
+    EL.activeAudio = audio;
+
+    audio.ontimeupdate = () => {
+      if (audio.duration && prog) {
+        prog.style.width = Math.round((audio.currentTime / audio.duration) * 100) + '%';
+      }
+    };
+    audio.onended = () => {
+      EL.activeAudio = null;
+      EL.activeId = null;
       if (btn)  { btn.textContent = '▶'; btn.style.background = ''; }
-      if (newLeft <= 0 && btn) { btn.disabled = true; btn.style.background = '#555'; btn.style.cursor = 'not-allowed'; }
       if (stat) stat.textContent = newLeft > 0 ? `✓ Done — ${newLeft} play${newLeft===1?'':'s'} left` : '✓ Done — exam limit reached';
       if (prog) prog.style.width = '100%';
-    }
-  );
+      if (newLeft <= 0 && btn) { btn.disabled = true; btn.style.background = '#555'; btn.style.cursor = 'not-allowed'; }
+      // Clear cache after last play to free memory
+      if (newLeft <= 0) { URL.revokeObjectURL(EL.audioCache[id]); delete EL.audioCache[id]; }
+    };
+    audio.onerror = () => {
+      EL.activeAudio = null; EL.activeId = null;
+      EL.playsLeft[id]++;
+      if (btn)  { btn.textContent = '▶'; btn.style.background = ''; btn.disabled = false; }
+      if (stat) stat.textContent = '⚠ Playback error — try again';
+    };
+    audio.play();
+
+  } catch(e) {
+    EL.activeId = null;
+    EL.playsLeft[id]++;
+    if (btn)  { btn.textContent = '▶'; btn.style.background = ''; btn.disabled = false; }
+    if (stat) stat.textContent = `⚠ Error: ${e.message}`;
+    if (prog) prog.style.width = '0%';
+  }
 }
 
 // ════════════════════════════════════════════════════════
